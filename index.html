@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Akustik Kamera — Panel</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: system-ui, sans-serif;
+    background: #111418; color: #e6e6e6;
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 16px; background: #1a1f26; border-bottom: 1px solid #2a313b;
+  }
+  header h1 { font-size: 18px; margin: 0; }
+  #status { font-size: 13px; color: #9aa4b2; }
+  main { display: flex; gap: 16px; padding: 16px; flex-wrap: wrap; }
+  #stage {
+    position: relative; flex: 1 1 640px; max-width: 960px;
+    background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 4 / 3;
+  }
+  #stage video, #stage canvas {
+    position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+  }
+  #overlay { pointer-events: none; }
+  #placeholder {
+    position: absolute; inset: 0; display: flex; align-items: center;
+    justify-content: center; color: #777; font-size: 15px; text-align: center; padding: 20px;
+  }
+  aside {
+    flex: 0 1 280px; background: #1a1f26; border: 1px solid #2a313b;
+    border-radius: 8px; padding: 14px; display: flex; flex-direction: column; gap: 14px;
+  }
+  aside h2 { font-size: 14px; margin: 0 0 6px; color: #9aa4b2; text-transform: uppercase; letter-spacing: .05em; }
+  label { font-size: 13px; display: block; margin-bottom: 4px; }
+  select, input[type=text], button {
+    width: 100%; padding: 7px 8px; border-radius: 6px; border: 1px solid #39424e;
+    background: #232a33; color: #e6e6e6; font-size: 13px;
+  }
+  button { cursor: pointer; background: #2d6cdf; border-color: #2d6cdf; }
+  button.secondary { background: #232a33; border-color: #39424e; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  input[type=range] { width: 100%; }
+  #legend { height: 12px; border-radius: 3px; }
+  .legend-labels { display: flex; justify-content: space-between; font-size: 11px; color: #9aa4b2; }
+  #peak { font-size: 13px; color: #cfd6df; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Akustik Kamera — Panel</h1>
+  <span id="status">Kamera kapalı</span>
+</header>
+
+<main>
+  <div id="stage">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="overlay"></canvas>
+    <div id="placeholder">“Kamerayı başlat” düğmesine basın</div>
+  </div>
+
+  <aside>
+    <section>
+      <h2>Kamera</h2>
+      <label for="cameraSelect">Kaynak</label>
+      <select id="cameraSelect"><option value="">Varsayılan kamera</option></select>
+      <div class="row" style="margin-top:8px">
+        <button id="startBtn">Kamerayı başlat</button>
+        <button id="stopBtn" class="secondary">Durdur</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>Isı haritası</h2>
+      <label for="sourceSelect">Veri kaynağı</label>
+      <select id="sourceSelect">
+        <option value="off">Kapalı</option>
+        <option value="demo" selected>Demo (sahte veri)</option>
+        <option value="ws">WebSocket (gerçek veri)</option>
+      </select>
+
+      <div id="demoBox" style="margin-top:8px">
+        <label for="scenario">Demo senaryosu</label>
+        <select id="scenario">
+          <option value="moving" selected>Hareketli kaynak</option>
+          <option value="fixed">Sabit kaynak (orta)</option>
+          <option value="two">İki kaynak</option>
+        </select>
+      </div>
+
+      <div id="wsBox" style="margin-top:8px; display:none">
+        <label for="wsUrl">WebSocket adresi</label>
+        <input id="wsUrl" type="text" value="ws://localhost:8765">
+        <button id="wsBtn" style="margin-top:6px">Bağlan</button>
+      </div>
+
+      <label for="opacity" style="margin-top:10px">Saydamlık</label>
+      <input id="opacity" type="range" min="0" max="1" step="0.05" value="0.55">
+
+      <label for="threshold">Eşik (altını gizle)</label>
+      <input id="threshold" type="range" min="0" max="0.9" step="0.05" value="0.2">
+
+      <label for="smoothing">Yumuşatma (titremeyi azaltır)</label>
+      <input id="smoothing" type="range" min="0" max="0.95" step="0.05" value="0.7">
+
+      <label style="margin-top:6px"><input id="showPeak" type="checkbox" checked style="width:auto"> Tepe noktasını işaretle</label>
+
+      <div style="margin-top:8px">
+        <canvas id="legend" width="256" height="12" style="width:100%"></canvas>
+        <div class="legend-labels"><span>sessiz</span><span>yüksek</span></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Son ölçüm</h2>
+      <div id="peak">—</div>
+    </section>
+
+    <section>
+      <button id="snapBtn">📷 Ekran görüntüsü al</button>
+    </section>
+  </aside>
+</main>
+
+<script>
+/*
+ * Isı haritası veri formatı (docs/interfaces.md önerisi):
+ * {
+ *   "t": 1732190000.123,   // zaman damgası (sn, unix)
+ *   "w": 16, "h": 12,      // ızgara boyutu (sütun x satır)
+ *   "data": [ ... ]        // w*h sayı, satır satır (sol üstten), 0..1 arası
+ * }
+ * Panel bu formattaki her mesajı updateHeatmap(frame) ile çizer.
+ */
+
+const video = document.getElementById('video');
+const overlay = document.getElementById('overlay');
+const ctx = overlay.getContext('2d');
+const statusEl = document.getElementById('status');
+const placeholder = document.getElementById('placeholder');
+const cameraSelect = document.getElementById('cameraSelect');
+const sourceSelect = document.getElementById('sourceSelect');
+const wsBox = document.getElementById('wsBox');
+const opacityEl = document.getElementById('opacity');
+const thresholdEl = document.getElementById('threshold');
+const peakEl = document.getElementById('peak');
+
+let stream = null;
+let lastFrame = null;
+let peak = null;
+let ws = null;
+let frameCount = 0;
+let fps = 0;
+let fpsTimer = performance.now();
+
+/* ---------- Renk haritası (inferno benzeri) ---------- */
+const STOPS = [
+  [0.0, [0, 0, 4]], [0.25, [87, 16, 110]], [0.5, [188, 55, 84]],
+  [0.75, [249, 142, 9]], [1.0, [252, 255, 164]]
+];
+function colormap(v) {
+  v = Math.min(1, Math.max(0, v));
+  for (let i = 1; i < STOPS.length; i++) {
+    if (v <= STOPS[i][0]) {
+      const [p0, c0] = STOPS[i - 1], [p1, c1] = STOPS[i];
+      const k = (v - p0) / (p1 - p0);
+      return c0.map((c, j) => Math.round(c + (c1[j] - c) * k));
+    }
+  }
+  return STOPS[STOPS.length - 1][1];
+}
+(function drawLegend() {
+  const lg = document.getElementById('legend').getContext('2d');
+  for (let x = 0; x < 256; x++) {
+    const [r, g, b] = colormap(x / 255);
+    lg.fillStyle = `rgb(${r},${g},${b})`;
+    lg.fillRect(x, 0, 1, 12);
+  }
+})();
+
+/* ---------- Kamera ---------- */
+async function listCameras() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const cams = devices.filter(d => d.kind === 'videoinput');
+    const current = cameraSelect.value;
+    cameraSelect.innerHTML = '<option value="">Varsayılan kamera</option>';
+    cams.forEach((c, i) => {
+      const o = document.createElement('option');
+      o.value = c.deviceId;
+      o.textContent = c.label || `Kamera ${i + 1}`;
+      cameraSelect.appendChild(o);
+    });
+    cameraSelect.value = current;
+  } catch (e) { console.warn(e); }
+}
+
+async function startCamera() {
+  stopCamera();
+  const id = cameraSelect.value;
+  const constraints = {
+    video: id ? { deviceId: { exact: id } } : { width: { ideal: 1280 }, height: { ideal: 720 } },
+    audio: false
+  };
+  try {
+    stream = await navigator.mediaDevices.getUserMedia(constraints);
+    video.srcObject = stream;
+    placeholder.style.display = 'none';
+    await listCameras(); // izin verildikten sonra kamera adları görünür
+  } catch (e) {
+    placeholder.style.display = 'flex';
+    placeholder.textContent = 'Kamera açılamadı: ' + e.message +
+      ' — sayfayı http://localhost üzerinden açtığınızdan ve izin verdiğinizden emin olun.';
+  }
+}
+
+function stopCamera() {
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = null;
+  video.srcObject = null;
+  placeholder.style.display = 'flex';
+  placeholder.textContent = '“Kamerayı başlat” düğmesine basın';
+}
+
+/* ---------- Isı haritası çizimi ---------- */
+const gridCanvas = document.createElement('canvas');
+const gridCtx = gridCanvas.getContext('2d');
+
+function updateHeatmap(frame) {
+  if (!frame || !frame.w || !frame.h || !Array.isArray(frame.data)) return;
+  if (frame.data.length !== frame.w * frame.h) {
+    console.warn('Hatalı çerçeve: data uzunluğu w*h değil', frame);
+    return;
+  }
+  frameCount++;
+
+  // --- ÖZELLİK 2: Yumuşatma ---
+  // yeni = k * eski + (1 - k) * gelen   (k büyüdükçe görüntü daha sakin)
+  const k = parseFloat(document.getElementById('smoothing').value);
+  let data = frame.data;
+  if (lastFrame && lastFrame.w === frame.w && lastFrame.h === frame.h) {
+    data = frame.data.map((v, i) => k * lastFrame.data[i] + (1 - k) * v);
+  }
+  lastFrame = { t: frame.t, w: frame.w, h: frame.h, data };
+
+  // --- ÖZELLİK 1: Tepe noktası (ses kaynağının tahmini konumu) ---
+  let maxV = -Infinity, maxI = 0;
+  data.forEach((v, i) => { if (v > maxV) { maxV = v; maxI = i; } });
+  const px = (maxI % frame.w) / (frame.w - 1);
+  const py = Math.floor(maxI / frame.w) / (frame.h - 1);
+  peak = { x: px, y: py, v: maxV };
+  peakEl.textContent =
+    `Tepe: ${(maxV * 100).toFixed(0)}% · konum x=${(px * 100).toFixed(0)}%, y=${(py * 100).toFixed(0)}%`;
+}
+
+function drawPeakMarker(c, x, y, v) {
+  const r = Math.max(14, c.canvas.width * 0.025);
+  c.save();
+  c.lineWidth = 3;
+  c.strokeStyle = '#ffffff';
+  c.shadowColor = 'rgba(0,0,0,0.8)';
+  c.shadowBlur = 6;
+  c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.stroke();          // halka
+  c.beginPath();                                                       // artı
+  c.moveTo(x - r * 1.6, y); c.lineTo(x - r * 0.5, y);
+  c.moveTo(x + r * 0.5, y); c.lineTo(x + r * 1.6, y);
+  c.moveTo(x, y - r * 1.6); c.lineTo(x, y - r * 0.5);
+  c.moveTo(x, y + r * 0.5); c.lineTo(x, y + r * 1.6);
+  c.stroke();
+  c.font = `bold ${Math.round(r * 0.9)}px system-ui`;                  // etiket
+  c.fillStyle = '#ffffff';
+  c.fillText(`${Math.round(v * 100)}%`, x + r * 1.2, y - r * 1.2);
+  c.restore();
+}
+
+function render() {
+  // Overlay boyutunu ekranla eşle
+  const r = overlay.getBoundingClientRect();
+  if (overlay.width !== Math.round(r.width) || overlay.height !== Math.round(r.height)) {
+    overlay.width = Math.round(r.width);
+    overlay.height = Math.round(r.height);
+  }
+  ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+  if (lastFrame && sourceSelect.value !== 'off') {
+    const { w, h, data } = lastFrame;
+    const th = parseFloat(thresholdEl.value);
+    const alpha = parseFloat(opacityEl.value);
+    gridCanvas.width = w; gridCanvas.height = h;
+    const img = gridCtx.createImageData(w, h);
+    for (let i = 0; i < w * h; i++) {
+      const v = data[i];
+      const [rr, gg, bb] = colormap(v);
+      img.data[i * 4] = rr; img.data[i * 4 + 1] = gg; img.data[i * 4 + 2] = bb;
+      img.data[i * 4 + 3] = v < th ? 0 : Math.round(255 * alpha * Math.min(1, (v - th) / (1 - th) * 1.5));
+    }
+    gridCtx.putImageData(img, 0, 0);
+    // Küçük ızgarayı yumuşatarak büyüt
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(gridCanvas, 0, 0, overlay.width, overlay.height);
+
+    // Tepe noktası işareti: halka + artı + etiket
+    if (peak && document.getElementById('showPeak').checked && peak.v >= th) {
+      drawPeakMarker(ctx, peak.x * overlay.width, peak.y * overlay.height, peak.v);
+    }
+  }
+
+  // FPS (ısı haritası güncelleme hızı)
+  const now = performance.now();
+  if (now - fpsTimer > 1000) {
+    fps = frameCount * 1000 / (now - fpsTimer);
+    frameCount = 0; fpsTimer = now;
+    const cam = stream ? 'Kamera açık' : 'Kamera kapalı';
+    const src = { off: 'ısı haritası kapalı', demo: 'demo veri', ws: ws && ws.readyState === 1 ? 'WebSocket bağlı' : 'WebSocket bağlı değil' }[sourceSelect.value];
+    statusEl.textContent = `${cam} · ${src} · ${fps.toFixed(1)} kare/sn`;
+  }
+  requestAnimationFrame(render);
+}
+
+/* ---------- Demo veri üreteci ---------- */
+// Ekranda dolaşan sahte bir ses kaynağı: algoritma hazır olana kadar paneli test etmek için.
+let demoTimer = null;
+function startDemo() {
+  stopDemo();
+  const w = 16, h = 12;
+  demoTimer = setInterval(() => {
+    const t = performance.now() / 1000;
+    // --- ÖZELLİK 3: Test senaryoları ---
+    // Her kaynak: { x, y (0–1 arası konum), g (güç) }
+    const scenario = document.getElementById('scenario').value;
+    let sources;
+    if (scenario === 'fixed') {
+      sources = [{ x: 0.5, y: 0.5, g: 1 }];
+    } else if (scenario === 'two') {
+      sources = [
+        { x: 0.25, y: 0.4, g: 1 },
+        { x: 0.75 + 0.05 * Math.sin(t), y: 0.6, g: 0.7 }
+      ];
+    } else {
+      sources = [{ x: 0.5 + 0.35 * Math.cos(t * 0.6), y: 0.5 + 0.25 * Math.sin(t * 0.9), g: 1 }];
+    }
+    const data = [];
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        let v = Math.random() * 0.25; // gürültü (gerçek veri de gürültülü olacak)
+        for (const s of sources) {
+          const dx = x / (w - 1) - s.x, dy = y / (h - 1) - s.y;
+          v += s.g * Math.exp(-(dx * dx + dy * dy) / 0.02);
+        }
+        data.push(Math.min(1, v));
+      }
+    }
+    updateHeatmap({ t: Date.now() / 1000, w, h, data });
+  }, 100); // 10 kare/sn
+}
+function stopDemo() { if (demoTimer) clearInterval(demoTimer); demoTimer = null; }
+
+/* ---------- WebSocket (gerçek veri) ---------- */
+function connectWs() {
+  if (ws) ws.close();
+  try {
+    ws = new WebSocket(document.getElementById('wsUrl').value);
+    ws.onmessage = ev => {
+      try { updateHeatmap(JSON.parse(ev.data)); } catch (e) { console.warn('JSON okunamadı', e); }
+    };
+    ws.onclose = () => console.log('WebSocket kapandı');
+    ws.onerror = e => console.warn('WebSocket hatası', e);
+  } catch (e) { alert('Bağlanılamadı: ' + e.message); }
+}
+
+/* ---------- Kontroller ---------- */
+function applySource() {
+  const s = sourceSelect.value;
+  wsBox.style.display = s === 'ws' ? 'block' : 'none';
+  document.getElementById('demoBox').style.display = s === 'demo' ? 'block' : 'none';
+  if (s === 'demo') startDemo(); else stopDemo();
+  if (s !== 'ws' && ws) { ws.close(); ws = null; }
+  if (s === 'off') { lastFrame = null; peakEl.textContent = '—'; }
+}
+
+/* ---------- ÖZELLİK 4: Ekran görüntüsü ---------- */
+// Kamera karesini ve ısı haritasını tek bir canvas'ta birleştirip PNG olarak indirir.
+function takeSnapshot() {
+  const snap = document.createElement('canvas');
+  snap.width = overlay.width;
+  snap.height = overlay.height;
+  const s = snap.getContext('2d');
+  s.fillStyle = '#000';
+  s.fillRect(0, 0, snap.width, snap.height);
+  if (stream && video.videoWidth) {
+    // Videoyu ekrandaki gibi kırparak çiz (object-fit: cover)
+    const vr = video.videoWidth / video.videoHeight, cr = snap.width / snap.height;
+    let sw = video.videoWidth, sh = video.videoHeight, sx = 0, sy = 0;
+    if (vr > cr) { sw = sh * cr; sx = (video.videoWidth - sw) / 2; }
+    else { sh = sw / cr; sy = (video.videoHeight - sh) / 2; }
+    s.drawImage(video, sx, sy, sw, sh, 0, 0, snap.width, snap.height);
+  }
+  s.drawImage(overlay, 0, 0);
+  const a = document.createElement('a');
+  a.download = `akustik-kamera-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
+  a.href = snap.toDataURL('image/png');
+  a.click();
+}
+
+document.getElementById('snapBtn').onclick = takeSnapshot;
+document.getElementById('startBtn').onclick = startCamera;
+document.getElementById('stopBtn').onclick = stopCamera;
+document.getElementById('wsBtn').onclick = connectWs;
+sourceSelect.onchange = applySource;
+cameraSelect.onchange = () => { if (stream) startCamera(); };
+
+window.updateHeatmap = updateHeatmap; // konsoldan test için
+listCameras();
+applySource();
+render();
+</script>
+</body>
+</html>
